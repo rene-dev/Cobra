@@ -4,6 +4,14 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+#define BUF_SIZE 4096
+#define PORT 7000
 
 void writecmd(char* cmd,int tty_fd){
    char buf[50];
@@ -24,6 +32,47 @@ void readcmd(char* cmd,int tty_fd){
    usleep(200000);//wait for cobra to write data
    fgets(cmd,50,fdopen(tty_fd,"r"));
 }
+
+int receiveLine(int s, char *line, int maxChars) {
+   int l, ch, pos=0;
+
+   memset(line, 0, maxChars);
+   for (;;) {
+      if ((l=recv(s,&line[pos],1, 0))<=0) {
+         return -1;
+      }
+      switch(ch=line[pos]) {
+         case 13:
+            line[pos]=0;
+            break;
+         case 10:
+            line[pos]=0;
+            break;
+      }
+      pos++;
+      if (ch == 10){
+         return pos;
+      }
+      if (pos==maxChars) return pos;
+    }
+}
+
+int handle_client(const int sock,int tty_fd){
+   char line[BUF_SIZE];
+   int pos1,pos2,pos3,pos4,pos5,pos6;
+   while(receiveLine(sock,line,BUF_SIZE)){
+      if(!strcmp(line,"q")){
+         return 0;
+      }
+      if(sscanf(line,"D %i %i %i %i %i %i",&pos1,&pos2,&pos3,&pos4,&pos5,&pos6) == 6){
+         printf("received D %i %i %i %i %i %i, sending...\n",pos1,pos2,pos3,pos4,pos5,pos6);
+         writecmd(line,tty_fd);
+         printf("done!\n");
+      }
+   }
+
+   return 0;
+}
  
 int main(int argc,char** argv)
 {
@@ -35,6 +84,10 @@ int main(int argc,char** argv)
    
    char cmd[100];
    char buf[100];
+
+   int s, c;
+   socklen_t addr_len;
+   struct sockaddr_in addr;
    
    if(argc < 3){
       printf("usage: %s device [read|write file|cal|home|clear|start|lbl num|D mot1 mot2 mot3 mot4 mot5 mot6]\r\n",argv[0]);
@@ -94,7 +147,7 @@ int main(int argc,char** argv)
       strcat(cmd,argv[7]);
       strcat(cmd," ");
       strcat(cmd,argv[8]);
-      writecmd(cmd,tty_fd);//set program counter to 0
+      writecmd(cmd,tty_fd);//send command
    }
    else if(strcmp(argv[2],"write") == 0 && argc == 4){
       file = fopen(argv[3],"r");
@@ -116,6 +169,44 @@ int main(int argc,char** argv)
       strcat(cmd,argv[3]);
       writecmd(cmd,tty_fd);//start
    
+   }
+   else if(strcmp(argv[2],"-d") == 0){
+      printf("Starting Server...\n");
+      
+      s = socket(PF_INET, SOCK_STREAM, 0);
+      if (s == -1){
+         perror("socket() failed");
+         return 1;
+      }
+
+      addr.sin_addr.s_addr = INADDR_ANY;
+      addr.sin_port = htons(PORT);
+      addr.sin_family = AF_INET;
+
+      if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) == -1){
+         perror("bind() failed");
+         return 2;
+      }
+
+      if (listen(s, 3) == -1){
+         perror("listen() failed");
+         return 3;
+      }
+      printf("Listening...\n");
+
+      for(;;){
+         addr_len = sizeof(addr);
+         c = accept(s, (struct sockaddr*)&addr, &addr_len);
+         if (c == -1){
+            perror("accept() failed");
+            continue;
+         }
+
+         printf("Client %s connected\n", inet_ntoa(addr.sin_addr));
+         handle_client(c,tty_fd);
+         printf("Client %s quit\n", inet_ntoa(addr.sin_addr));
+         close(c);
+      }
    }
    
    close(tty_fd);
